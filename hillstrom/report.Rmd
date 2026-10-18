@@ -1,0 +1,95 @@
+---
+title: "Hillstrom Email Experiment: From Randomization Checks to Qini Curves"
+author: "Jiaying Zhao"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '2'
+  html_document:
+    toc: yes
+    toc_depth: 2
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath("."))
+dir.create("outputs", recursive = TRUE, showWarnings = FALSE)
+data_code <- readLines("R/01_data.R", warn = FALSE)
+model_code <- readLines("R/02_model.R", warn = FALSE)
+```
+
+
+This report follows the analysis in [01_data.R](R/01_data.R) and [02_model.R](R/02_model.R). Code is read directly from these scripts to avoid maintaining duplicate implementations. The data come from a randomized email experiment with three arms: `No E-Mail`, `Womens E-Mail`, and `Mens E-Mail`. The primary outcome, `conversion`, indicates whether a customer purchased within two weeks after the experiment. Pretreatment features are used to assess balance and predict treatment effects; `visit` and `conversion` are post-treatment outcomes.
+
+## 1. Load Data and Create Training and Test Sets
+
+The split is stratified by the randomized treatment arm, `segment`, with approximately 80% allocated to training and 20% to testing. The full sample is retained to describe conversion and visit rates across all three arms. A fixed random seed makes the split reproducible.
+
+```{r data, code=data_code[1:46]}
+```
+
+## 2. Check Pretreatment Covariate Balance: SMD
+
+Each email arm is compared with the no-email control. Continuous variables are used directly, while categorical variables are represented by one indicator per category. The standardized mean difference is
+
+$$
+\operatorname{SMD}(X)=
+\frac{\bar X_a-\bar X_0}
+{\sqrt{(s_a^2+s_0^2)/2}}.
+$$
+
+The plot shows absolute SMDs. The dashed line at 0.1 is a common rule of thumb. Small SMDs indicate similarity in measured covariates; they do not establish all causal identification assumptions.
+
+```{r smd, code=data_code[47:107]}
+```
+
+```{r smd-plot, echo=FALSE}
+p
+```
+
+## 3. Average Treatment Effects: ATE
+
+With `conversion` as the outcome, the difference in purchase rates between an email arm and the no-email control is the unadjusted ATE in this randomized experiment. Probability differences are multiplied by 100 and expressed in *percentage points*. The analysis reports individual 95% confidence intervals and approximate simultaneous intervals for the two email-versus-control comparisons.
+
+```{r ate, code=model_code[1:26]}
+```
+
+## 4. Construct Model Inputs
+
+`mens` and `womens` describe historical product purchases, rather than customer gender. Numerical variables and categorical indicators form $X$. The binary analysis focuses on **Womens E-Mail versus No E-Mail**; the menswear email arm is excluded from binary learner training and testing.
+
+```{r features, code=data_code[108:156]}
+```
+
+## 5. Predict Treatment Effects with S, T, X, and DR Learners
+
+The target is the conditional average treatment effect (CATE): $$
+\tau(x)=\mathbb E[Y(1)-Y(0)\mid X=x].
+$$
+
+The S-learner fits a single outcome model using $X$ and treatment status. The T-learner fits separate outcome models for each arm and subtracts their predictions. The X-learner constructs imputed treatment-effect targets in each arm and combines their predictions with equal weights. The DR-learner uses outcome models and the known randomization probability $e=0.5$ to construct a pseudo-outcome, then learns its relationship with $X$.
+
+In this implementation, the T-models used to construct the DR pseudo-outcome are fitted and evaluated on the same training sample, without cross-fitting. This is an educational DR-learner implementation and should not be equated with strictly cross-fitted DML inference. Individual causal effects are unobserved, so held-out uplift ranking and targeting performance are more relevant to evaluating these models than purchase-prediction AUC alone.
+
+```{r learners, code=model_code[27:114]}
+```
+
+## 6. Test-Set Uplift and Qini Curves
+
+Each learner produces treatment-effect scores on the held-out test set. Customers are ranked from highest to lowest score. For the top $q$ fraction, the code computes cumulative incremental purchase probability per customer in the entire test sample:
+
+$$
+G(q)=\frac{1}{n}\sum_{i\in\mathrm{top}(q)}
+\left[\frac{A_iY_i}{0.5}-\frac{(1-A_i)Y_i}{0.5}\right],
+\qquad
+Q(q)=G(q)-qG(1).
+$$
+
+The black dashed line in the uplift plot is the random-ranking reference, $qG(1)$. The centered Qini curve subtracts this reference. A larger Qini area indicates greater cumulative uplift from the ranking in this test sample, although the curves remain subject to sampling variation. Plot settings follow the original R script.
+
+```{r qini, code=model_code[115:234], fig.width=9, fig.height=5}
+```
+
+```{r qini-plots, echo=FALSE, fig.width=9, fig.height=5}
+p1
+p2
+```
